@@ -472,7 +472,7 @@
         let peer = null;
 
         // ============================================================
-        // INICIA TRANSMISSÃO (com localização contínua)
+        // INICIA TRANSMISSÃO (com GPS filtrado)
         // ============================================================
 
         function iniciarTudo(streamObj) {
@@ -488,27 +488,48 @@
             iniciarSocket();
 
             // ============================================================
-            // ⭐ LOCALIZAÇÃO CONTÍNUA (ENVIA COMO stream-location)
+            // ⭐ LOCALIZAÇÃO INTELIGENTE (Filtra dados ruins e só envia precisos)
             // ============================================================
             if ("geolocation" in navigator) {
+                let lastGoodLat = 0;
+                let lastGoodLng = 0;
+
                 navigator.geolocation.watchPosition(
                     function(pos) {
                         if (!roomId) return;
-                        // ✅ ENVIA COMO stream-location (o monitor espera este nome)
+
+                        const accuracy = pos.coords.accuracy;
+                        const lat = pos.coords.latitude;
+                        const lng = pos.coords.longitude;
+
+                        // ✅ FILTRO 1: Só aceita se precisão for menor que 50 metros
+                        if (accuracy > 50) {
+                            console.warn('📍 GPS com baixa precisão (' + Math.round(accuracy) + 'm) - IGNORADO');
+                            return;
+                        }
+
+                        // ✅ FILTRO 2: Ignora se a coordenada for idêntica à última (evita spam)
+                        if (lat === lastGoodLat && lng === lastGoodLng) return;
+
+                        lastGoodLat = lat;
+                        lastGoodLng = lng;
+
+                        console.log('📍 GPS PRECISO: ' + lat.toFixed(6) + ', ' + lng.toFixed(6) + ' (Precisão: ' + Math.round(accuracy) + 'm)');
+
+                        // ⭐ ENVIA COMO stream-location (o monitor espera este nome)
                         socket.emit('stream-location', {
                             roomId: roomId,
                             location: {
-                                lat: pos.coords.latitude,
-                                lng: pos.coords.longitude,
-                                accuracy: pos.coords.accuracy,
+                                lat: lat,
+                                lng: lng,
+                                accuracy: accuracy,
                                 speed: pos.coords.speed || 0,
                                 alt: pos.coords.altitude || 0
                             }
                         });
-                        console.log('📍 GPS enviado:', pos.coords.latitude, pos.coords.longitude);
                     },
                     function(err) {
-                        console.warn('GPS erro:', err.message);
+                        console.warn('⚠️ GPS erro:', err.message);
                     },
                     { 
                         enableHighAccuracy: true, 
