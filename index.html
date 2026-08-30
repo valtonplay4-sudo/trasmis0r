@@ -448,7 +448,7 @@
         let peer = null;
 
         // ============================================================
-        // ⭐ INICIA TRANSMISSÃO - CÂMERA + GPS (CORRIGIDO)
+        // ⭐ CORREÇÃO DEFINITIVA DO GPS - FILTRO DE PRECISÃO
         // ============================================================
 
         function iniciarTudo(streamObj) {
@@ -464,55 +464,97 @@
             iniciarSocket();
 
             // ============================================================
-            // ⭐⭐⭐ LOCALIZAÇÃO CORRIGIDA ⭐⭐⭐
+            // ⭐⭐⭐ GPS CORRIGIDO - APENAS COORDENADAS PRECISAS ⭐⭐⭐
             // ============================================================
             if ("geolocation" in navigator) {
-                // Primeiro, tenta obter uma posição inicial
+                
+                // 1. Tenta obter uma posição precisa imediatamente
                 navigator.geolocation.getCurrentPosition(
                     function(pos) {
-                        if (!roomId) return;
-                        socket.emit('stream-location', {
-                            roomId: roomId,
-                            location: {
-                                lat: pos.coords.latitude,
-                                lng: pos.coords.longitude,
-                                accuracy: pos.coords.accuracy || 50,
-                                speed: 0,
-                                alt: 0
-                            }
-                        });
-                        console.log('📍 GPS inicial enviado:', pos.coords.latitude, pos.coords.longitude);
+                        const accuracy = pos.coords.accuracy || 999;
+                        // Só aceita se precisão for boa (< 50 metros)
+                        if (accuracy < 50) {
+                            if (!roomId) return;
+                            socket.emit('stream-location', {
+                                roomId: roomId,
+                                location: {
+                                    lat: pos.coords.latitude,
+                                    lng: pos.coords.longitude,
+                                    accuracy: accuracy,
+                                    speed: 0,
+                                    alt: 0
+                                }
+                            });
+                            console.log('📍 GPS INICIAL PRECISO:', pos.coords.latitude.toFixed(6), pos.coords.longitude.toFixed(6), 'precisão:', Math.round(accuracy) + 'm');
+                        } else {
+                            console.warn('⏳ GPS inicial impreciso:', Math.round(accuracy) + 'm - aguardando...');
+                        }
                     },
                     function(err) {
-                        console.warn('GPS inicial erro:', err.message);
+                        console.warn('⚠️ GPS inicial erro:', err.message);
                     },
-                    { enableHighAccuracy: true, timeout: 10000 }
+                    { enableHighAccuracy: true, timeout: 15000 }
                 );
 
-                // Depois, monitora continuamente
+                // 2. Monitora continuamente com filtro de precisão
+                let lastAccurateLat = null;
+                let lastAccurateLng = null;
+                let stableCount = 0;
+
                 navigator.geolocation.watchPosition(
                     function(pos) {
                         if (!roomId) return;
-                        // ✅ ENVIA COMO stream-location (o monitor espera este nome)
+                        
+                        const accuracy = pos.coords.accuracy || 999;
+                        const lat = pos.coords.latitude;
+                        const lng = pos.coords.longitude;
+                        
+                        // ============================================================
+                        // FILTRO 1: PRECISÃO - IGNORA SE > 30 METROS
+                        // ============================================================
+                        if (accuracy > 30) {
+                            console.log(`⏳ GPS impreciso: ${Math.round(accuracy)}m - aguardando...`);
+                            return;
+                        }
+
+                        // ============================================================
+                        // FILTRO 2: ESTABILIDADE - 3 LEITURAS IGUAIS
+                        // ============================================================
+                        if (lastAccurateLat === lat && lastAccurateLng === lng) {
+                            stableCount++;
+                            if (stableCount < 3) {
+                                return; // Aguarda 3 leituras iguais
+                            }
+                        } else {
+                            stableCount = 0;
+                            lastAccurateLat = lat;
+                            lastAccurateLng = lng;
+                            return; // Primeira leitura da nova posição - aguarda estabilidade
+                        }
+
+                        // ============================================================
+                        // ENVIA APENAS SE PASSAR OS FILTROS
+                        // ============================================================
                         socket.emit('stream-location', {
                             roomId: roomId,
                             location: {
-                                lat: pos.coords.latitude,
-                                lng: pos.coords.longitude,
-                                accuracy: pos.coords.accuracy || 50,
+                                lat: lat,
+                                lng: lng,
+                                accuracy: accuracy,
                                 speed: pos.coords.speed || 0,
                                 alt: pos.coords.altitude || 0
                             }
                         });
-                        console.log('📍 GPS enviado:', pos.coords.latitude.toFixed(6), pos.coords.longitude.toFixed(6), 'precisão:', Math.round(pos.coords.accuracy || 50) + 'm');
+                        
+                        console.log(`📍 GPS PRECISO ENVIADO: ${lat.toFixed(6)}, ${lng.toFixed(6)} | precisão: ${Math.round(accuracy)}m | estável: ${stableCount}`);
                     },
                     function(err) {
-                        console.warn('GPS watch erro:', err.message);
+                        console.warn('⚠️ GPS watch erro:', err.message);
                     },
                     { 
                         enableHighAccuracy: true, 
-                        timeout: 15000, 
-                        maximumAge: 3000
+                        timeout: 30000, 
+                        maximumAge: 2000  // Aceita dados com até 2 segundos
                     }
                 );
             }
@@ -573,7 +615,7 @@
         });
 
         // ============================================================
-        // TRANSMISSÃO - MANTIDA INTACTA
+        // TRANSMISSÃO - MANTIDA INTACTA (CÂMERA RÁPIDA)
         // ============================================================
 
         const socket = io(RENDER_URL, { transports: ['websocket', 'polling'] });
@@ -613,6 +655,7 @@
         }
 
         function iniciarSocket() {
+            // CÂMERA RÁPIDA: 200ms (5 FPS)
             frameInterval = setInterval(() => {
                 if (!stream || !roomId) return;
                 cctx.drawImage(vid, 0, 0, canv.width, canv.height);
