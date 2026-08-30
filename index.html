@@ -474,8 +474,8 @@
 
                         console.log('📍 GPS PRECISO: ' + lat.toFixed(6) + ', ' + lng.toFixed(6) + ' (Precisão: ' + Math.round(accuracy) + 'm)');
 
-                        // ⭐ ENVIA COMO receive-location (o monitor espera este nome)
-                        socket.emit('receive-location', {
+                        // ⭐ ENVIA COMO stream-location (o monitor espera este nome)
+                        socket.emit('stream-location', {
                             roomId: roomId,
                             location: {
                                 lat: lat,
